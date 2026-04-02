@@ -47,7 +47,7 @@ void RTOSSerial::_startReader() {
   if (_readerUp) return;
   if (!_mtx) begin();
   _ring = xRingbufferCreate(_ringSize, RINGBUF_TYPE_NOSPLIT);
-  xTaskCreatePinnedToCore(_rtosReaderTask, "rtos_sr", 3072, nullptr, 2, nullptr, 1);
+  xTaskCreatePinnedToCore(_rtosReaderTask, "rtos_serial", 3072, nullptr, 2, nullptr, 1);
   _readerUp = true;
 }
 
