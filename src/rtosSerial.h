@@ -6,42 +6,64 @@
 #include <freertos/semphr.h>
 
 /*
- * RTOSSerial — Thread-safe Serial for ESP32 FreeRTOS
+ * RTOSSerial — Thread-safe Serial for ESP32 with broadcast reads
  *
- *   rtosSerial.begin();                // optional (auto-inits)
- *   rtosSerial.printf("x=%d\n", x);   // safe from any task
- *   String cmd = rtosSerial.read();    // non-blocking line read
+ * Inherits from Stream → native Arduino API:
+ *   read(), available(), peek(), readBytes(), readStringUntil(), etc.
  *
- * Write: mutex-protected, safe from any core/task
- * Read:  single ring buffer, reader task starts on first read()
+ * All I/O is mutex-protected. Reads are broadcast — every task sees
+ * every byte via its own cursor into a shared ring buffer.
+ *
+ * No polling, no background task. Uses Serial.onReceive() for
+ * zero-latency, event-driven byte capture.
+ *
+ *   Serial.begin(115200);
+ *   rtosSerial.println(3.14);              // thread-safe, any task
+ *   String cmd = rtosSerial.readLine();    // broadcast, non-blocking
+ *   int b = rtosSerial.read();             // broadcast, byte-level
  */
 
-#ifndef RTOS_RING_SIZE
-#define RTOS_RING_SIZE 256
-#endif
-
-class RTOSSerial {
+class RTOSSerial : public Stream {
 public:
-  void begin(size_t ringSize = RTOS_RING_SIZE);
+  void begin(size_t bufSize = 512);
 
-  // Write (thread-safe)
-  void print(const char* s);
-  void print(const String& s);
-  void println(const char* s = "");
-  void println(const String& s);
-  void printf(const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+  // Stream interface (broadcast reads, mutex-protected writes)
+  size_t write(uint8_t c) override;
+  size_t write(const uint8_t* buf, size_t size) override;
+  int    available() override;
+  int    read() override;
+  int    peek() override;
+  void   flush() override;
 
-  // Read (non-blocking, line-based)
-  String read();
+  // Non-blocking broadcast line read (returns "" if no complete line)
+  String readLine();
+
+  using Print::write;
 
 private:
-  SemaphoreHandle_t _mtx = nullptr;
-  size_t _ringSize = RTOS_RING_SIZE;
-  bool _readerUp = false;
-  void _lock();
-  void _unlock();
-  void _startReader();
-  friend void _rtosReaderTask(void*);
+  SemaphoreHandle_t _wMtx = nullptr;
+  SemaphoreHandle_t _rMtx = nullptr;
+  bool _rxUp = false;
+
+  // Single byte ring buffer
+  uint8_t* _buf = nullptr;
+  size_t   _bufSize = 512;
+  volatile uint32_t _head = 0;
+
+  // Per-task subscribers with independent cursors
+  static const int MAX_SUB = 4;
+  struct Sub {
+    TaskHandle_t task;
+    uint32_t byteCur;
+    uint32_t lineCur;
+  };
+  Sub _subs[MAX_SUB];
+  int _subCnt = 0;
+
+  int  _sub();
+  void _ensureMtx();
+  void _startRx();
+  friend void _rtosOnRx();
 };
 
 extern RTOSSerial rtosSerial;

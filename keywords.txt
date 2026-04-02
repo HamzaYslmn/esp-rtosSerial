@@ -16,16 +16,16 @@ begin	KEYWORD2
 print	KEYWORD2
 println	KEYWORD2
 printf	KEYWORD2
+write	KEYWORD2
 read	KEYWORD2
+readLine	KEYWORD2
+available	KEYWORD2
+peek	KEYWORD2
+readBytes	KEYWORD2
+flush	KEYWORD2
 
 #######################################
 # Instances (KEYWORD2)
 #######################################
 
 rtosSerial	KEYWORD2
-
-#######################################
-# Constants (LITERAL1)
-#######################################
-
-RTOS_RING_SIZE	LITERAL1

@@ -13,7 +13,7 @@ void setup() {
 }
 
 void loop() {
-  String cmd = rtosSerial.read();
+  String cmd = rtosSerial.readLine();
   if (cmd.length()) {
     rtosSerial.printf("Echo: %s\n", cmd.c_str());
   }
