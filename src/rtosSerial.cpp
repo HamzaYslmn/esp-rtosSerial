@@ -1,144 +1,152 @@
 #include "rtosSerial.h"
 
-struct TaskBuffer {
-  TaskHandle_t taskHandle;
-  RingbufHandle_t ringbuf;
-  size_t ringSize;
+// ── State ────────────────────────────────────────────────────
+
+struct _RtosBuf {
+  TaskHandle_t   task;
+  RingbufHandle_t ring;
 };
 
-static SemaphoreHandle_t serialMutex = nullptr;
-static TaskBuffer taskBuffers[MAX_TASK_BUFFERS];
-static size_t registeredTasks = 0;
-static size_t configuredRingSize = DEFAULT_RING_SIZE;
-static TaskHandle_t readerTaskHandle = nullptr;
+static SemaphoreHandle_t _mtx = nullptr;
+static _RtosBuf _bufs[RTOS_MAX_TASKS];
+static volatile size_t _nBufs = 0;
+static size_t _ringSize = RTOS_RING_SIZE;
 
-static void serialReaderTask(void* /*pv*/) {
-  while (true) {
+// ── Reader task ──────────────────────────────────────────────
+
+static void _readerTask(void*) {
+  for (;;) {
     if (Serial.available()) {
       String line = Serial.readStringUntil('\n');
       line.trim();
-      if (line.length() > 0) {
-        line += '\0';  // include terminator
-        const char* raw = line.c_str();
-        size_t len = line.length() + 1;
+      if (line.length() == 0) { vTaskDelay(1); continue; }
 
-        // Broadcast to every registered ring buffer
-        for (size_t i = 0; i < registeredTasks; ++i) {
-          RingbufHandle_t rb = taskBuffers[i].ringbuf;
-          if (!rb) continue;
-          // If there is no space, discard the old message and try again
-          if (xRingbufferSend(rb, raw, len, 0) != pdTRUE) {
-            size_t rcvLen;
-            char* discard = (char*)xRingbufferReceive(rb, &rcvLen, 0);
-            if (discard) {
-              vRingbufferReturnItem(rb, discard);
-            }
-            xRingbufferSend(rb, raw, len, 10 / portTICK_PERIOD_MS);
-          }
+      const char* raw = line.c_str();
+      size_t len = line.length() + 1;   // include null terminator
+
+      // Broadcast to all registered ring buffers
+      xSemaphoreTake(_mtx, portMAX_DELAY);
+      size_t n = _nBufs;
+      xSemaphoreGive(_mtx);
+
+      for (size_t i = 0; i < n; i++) {
+        RingbufHandle_t rb = _bufs[i].ring;
+        if (!rb) continue;
+        if (xRingbufferSend(rb, raw, len, 0) != pdTRUE) {
+          // Full — discard oldest, retry
+          size_t discard_len;
+          void* old = xRingbufferReceive(rb, &discard_len, 0);
+          if (old) vRingbufferReturnItem(rb, old);
+          xRingbufferSend(rb, raw, len, pdMS_TO_TICKS(5));
         }
       }
     }
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
-void rtosSerialInit() {
-  rtosSerialInit(DEFAULT_RING_SIZE);
-}
+// ── Init ─────────────────────────────────────────────────────
 
 void rtosSerialInit(size_t ringSize) {
-  if (ringSize < 64) ringSize = DEFAULT_RING_SIZE;
-  if (ringSize > MAX_RING_SIZE) ringSize = MAX_RING_SIZE;
-
-  configuredRingSize = ringSize;
-
-  if (!serialMutex) {
-    serialMutex = xSemaphoreCreateMutex();
-    for (int i = 0; i < MAX_TASK_BUFFERS; ++i) {
-      taskBuffers[i].taskHandle = nullptr;
-      taskBuffers[i].ringbuf   = nullptr;
-      taskBuffers[i].ringSize  = 0;
-    }
-    xTaskCreatePinnedToCore(serialReaderTask, "SerialReader", 4096, nullptr, 2, &readerTaskHandle, 1);
-  }
+  if (_mtx) return;                     // already initialized
+  _ringSize = (ringSize < 64) ? RTOS_RING_SIZE : ringSize;
+  _mtx = xSemaphoreCreateMutex();
+  memset(_bufs, 0, sizeof(_bufs));
+  xTaskCreatePinnedToCore(_readerTask, "rtos_sr", 3072, nullptr, 2, nullptr, 1);
 }
 
-static TaskBuffer* getOrRegisterTaskBuffer() {
-  TaskHandle_t current = xTaskGetCurrentTaskHandle();
+// ── Per-task buffer registration ─────────────────────────────
 
-  // Find existing one
-  for (size_t i = 0; i < registeredTasks; ++i) {
-    if (taskBuffers[i].taskHandle == current) {
-      return &taskBuffers[i];
+static _RtosBuf* _getBuf() {
+  TaskHandle_t me = xTaskGetCurrentTaskHandle();
+
+  xSemaphoreTake(_mtx, portMAX_DELAY);
+
+  // Find existing
+  for (size_t i = 0; i < _nBufs; i++) {
+    if (_bufs[i].task == me) {
+      xSemaphoreGive(_mtx);
+      return &_bufs[i];
     }
   }
 
-  // New registration
-  if (registeredTasks >= MAX_TASK_BUFFERS) return nullptr;
+  // Register new
+  if (_nBufs >= RTOS_MAX_TASKS) {
+    xSemaphoreGive(_mtx);
+    return nullptr;
+  }
+  _RtosBuf& b = _bufs[_nBufs];
+  b.task = me;
+  b.ring = xRingbufferCreate(_ringSize, RINGBUF_TYPE_NOSPLIT);
+  if (!b.ring) { xSemaphoreGive(_mtx); return nullptr; }
+  _nBufs++;
+  xSemaphoreGive(_mtx);
+  return &b;
+}
 
-  TaskBuffer& tb = taskBuffers[registeredTasks];
-  tb.taskHandle = current;
-  tb.ringSize   = configuredRingSize;
-  tb.ringbuf    = xRingbufferCreate(tb.ringSize, RINGBUF_TYPE_NOSPLIT);
-  if (!tb.ringbuf) return nullptr;
-  registeredTasks++;
-  return &tb;
+// ── Read ─────────────────────────────────────────────────────
+
+String rtosRead() {
+  _RtosBuf* b = _getBuf();
+  if (!b || !b->ring) return "";
+  size_t len;
+  char* item = (char*)xRingbufferReceive(b->ring, &len, 0);
+  if (!item) return "";
+  String s(item);
+  vRingbufferReturnItem(b->ring, item);
+  return s;
 }
 
 size_t rtosReadBytes(uint8_t* buf, size_t maxlen) {
-  TaskBuffer* tb = getOrRegisterTaskBuffer();
-  if (!tb || !tb->ringbuf || !buf || maxlen == 0) return 0;
-
+  _RtosBuf* b = _getBuf();
+  if (!b || !b->ring || !buf || !maxlen) return 0;
   size_t len;
-  char* item = (char*)xRingbufferReceive(tb->ringbuf, &len, 0);
-  if (item && len > 0) {
-    size_t toCopy = (len > maxlen) ? maxlen : len;
-    memcpy(buf, item, toCopy);
-    vRingbufferReturnItem(tb->ringbuf, item);
-    return toCopy;
-  }
-  return 0;
+  char* item = (char*)xRingbufferReceive(b->ring, &len, 0);
+  if (!item) return 0;
+  size_t n = (len < maxlen) ? len : maxlen;
+  memcpy(buf, item, n);
+  vRingbufferReturnItem(b->ring, item);
+  return n;
 }
 
-String rtosRead() {
-  TaskBuffer* tb = getOrRegisterTaskBuffer();
-  if (!tb || !tb->ringbuf) return "";
+// ── Write ────────────────────────────────────────────────────
 
-  size_t len;
-  char* item = (char*)xRingbufferReceive(tb->ringbuf, &len, 0);
-  if (item) {
-    String res(item);
-    vRingbufferReturnItem(tb->ringbuf, item);
-    return res;
-  }
-  return "";
+void rtosPrint(const char* s) {
+  if (!_mtx) return;
+  xSemaphoreTake(_mtx, portMAX_DELAY);
+  Serial.print(s);
+  xSemaphoreGive(_mtx);
 }
 
-void rtosPrint(const String& msg) {
-  if (!serialMutex) return;
-  if (xSemaphoreTake(serialMutex, portMAX_DELAY) == pdTRUE) {
-    Serial.print(msg);
-    xSemaphoreGive(serialMutex);
-  }
+void rtosPrint(const String& s) {
+  if (!_mtx) return;
+  xSemaphoreTake(_mtx, portMAX_DELAY);
+  Serial.print(s);
+  xSemaphoreGive(_mtx);
 }
 
-void rtosPrintln(const String& msg) {
-  if (!serialMutex) return;
-  if (xSemaphoreTake(serialMutex, portMAX_DELAY) == pdTRUE) {
-    Serial.println(msg);
-    xSemaphoreGive(serialMutex);
-  }
+void rtosPrintln(const char* s) {
+  if (!_mtx) return;
+  xSemaphoreTake(_mtx, portMAX_DELAY);
+  Serial.println(s);
+  xSemaphoreGive(_mtx);
 }
 
-void rtosPrintf(const char* format, ...) {
-  if (!serialMutex) return;
-  if (xSemaphoreTake(serialMutex, portMAX_DELAY) == pdTRUE) {
-    char buf[256];
-    va_list args;
-    va_start(args, format);
-    vsnprintf(buf, sizeof(buf), format, args);
-    va_end(args);
-    Serial.println(buf);
-    xSemaphoreGive(serialMutex);
-  }
+void rtosPrintln(const String& s) {
+  if (!_mtx) return;
+  xSemaphoreTake(_mtx, portMAX_DELAY);
+  Serial.println(s);
+  xSemaphoreGive(_mtx);
+}
+
+void rtosPrintf(const char* fmt, ...) {
+  if (!_mtx) return;
+  xSemaphoreTake(_mtx, portMAX_DELAY);
+  char buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  Serial.print(buf);
+  xSemaphoreGive(_mtx);
 }

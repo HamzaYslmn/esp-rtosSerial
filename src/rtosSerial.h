@@ -8,28 +8,37 @@
 #include <freertos/ringbuf.h>
 
 /*
- * Simple Thread-Safe Serial Interface (v2)
- * ----------------------------------------
- * - Same public API (rtosSerialInit, rtosPrint/ln/f, rtosRead)
- * - Incoming data with lock-free ring buffer for each task
- * - Background reader task broadcasts each line to all registered
- *   ring buffers
- * - Ring buffer size can be set with rtosSerialInit()
- * - Lightweight: single mutex for writes, reads are non-blocking
+ * Thread-Safe Serial for ESP32 FreeRTOS (v1.0.0)
+ * -----------------------------------------------
+ * Write: mutex-protected — safe from any task/core
+ * Read:  per-task ring buffer — each task gets its own copy
+ *        background reader broadcasts Serial input to all
+ *
+ * Usage:
+ *   rtosSerialInit();           // call once in setup()
+ *   rtosPrintf("val=%d\n", x);  // write from any task
+ *   String cmd = rtosRead();    // non-blocking read
  */
 
-#define MAX_TASK_BUFFERS 8
-#define DEFAULT_RING_SIZE 512
-#define MAX_RING_SIZE 1024
+#ifndef RTOS_MAX_TASKS
+#define RTOS_MAX_TASKS    8       // max concurrent reading tasks
+#endif
+#ifndef RTOS_RING_SIZE
+#define RTOS_RING_SIZE    256     // default ring buffer per task
+#endif
 
-void rtosSerialInit();                 // default ring size
-void rtosSerialInit(size_t ringSize);  // custom ring size
+// Init — call once in setup() after Serial.begin()
+void rtosSerialInit(size_t ringSize = RTOS_RING_SIZE);
 
-void rtosPrint(const String& msg);
-void rtosPrintln(const String& msg);
-void rtosPrintf(const char* format, ...);
+// Write (thread-safe, mutex-protected)
+void rtosPrint(const char* s);
+void rtosPrint(const String& s);
+void rtosPrintln(const char* s);
+void rtosPrintln(const String& s);
+void rtosPrintf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
-String rtosRead();                     // Non-blocking; returns "" if no data
-size_t rtosReadBytes(uint8_t* buf, size_t maxlen); // Non-blocking; returns number of bytes read
+// Read (non-blocking, per-task ring buffer)
+String rtosRead();
+size_t rtosReadBytes(uint8_t* buf, size_t maxlen);
 
-#endif  // RTOS_SERIAL_H
+#endif
