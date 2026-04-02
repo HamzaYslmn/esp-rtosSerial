@@ -3,19 +3,29 @@
 #######################################
 
 #######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+RTOSSerial	KEYWORD1
+
+#######################################
 # Methods and Functions (KEYWORD2)
 #######################################
 
-rtosSerialInit	KEYWORD2
-rtosPrint	KEYWORD2
-rtosPrintln	KEYWORD2
-rtosPrintf	KEYWORD2
-rtosRead	KEYWORD2
-rtosReadBytes	KEYWORD2
+begin	KEYWORD2
+print	KEYWORD2
+println	KEYWORD2
+printf	KEYWORD2
+read	KEYWORD2
+
+#######################################
+# Instances (KEYWORD2)
+#######################################
+
+rtosSerial	KEYWORD2
 
 #######################################
 # Constants (LITERAL1)
 #######################################
 
-RTOS_MAX_TASKS	LITERAL1
 RTOS_RING_SIZE	LITERAL1

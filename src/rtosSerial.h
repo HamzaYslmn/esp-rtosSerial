@@ -4,41 +4,46 @@
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
-#include <freertos/task.h>
-#include <freertos/ringbuf.h>
 
 /*
- * Thread-Safe Serial for ESP32 FreeRTOS (v1.0.0)
- * -----------------------------------------------
- * Write: mutex-protected — safe from any task/core
- * Read:  per-task ring buffer — each task gets its own copy
- *        background reader broadcasts Serial input to all
+ * RTOSSerial — Thread-safe Serial for ESP32 FreeRTOS
  *
- * Usage:
- *   rtosSerialInit();           // call once in setup()
- *   rtosPrintf("val=%d\n", x);  // write from any task
- *   String cmd = rtosRead();    // non-blocking read
+ *   rtosSerial.begin();                // optional (auto-inits)
+ *   rtosSerial.printf("x=%d\n", x);   // safe from any task
+ *   String cmd = rtosSerial.read();    // non-blocking line read
+ *
+ * Write: mutex-protected, safe from any core/task
+ * Read:  single ring buffer, reader task starts on first read()
  */
 
-#ifndef RTOS_MAX_TASKS
-#define RTOS_MAX_TASKS    8       // max concurrent reading tasks
-#endif
 #ifndef RTOS_RING_SIZE
-#define RTOS_RING_SIZE    256     // default ring buffer per task
+#define RTOS_RING_SIZE 256
 #endif
 
-// Init — call once in setup() after Serial.begin()
-void rtosSerialInit(size_t ringSize = RTOS_RING_SIZE);
+class RTOSSerial {
+public:
+  void begin(size_t ringSize = RTOS_RING_SIZE);
 
-// Write (thread-safe, mutex-protected)
-void rtosPrint(const char* s);
-void rtosPrint(const String& s);
-void rtosPrintln(const char* s);
-void rtosPrintln(const String& s);
-void rtosPrintf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+  // Write (thread-safe)
+  void print(const char* s);
+  void print(const String& s);
+  void println(const char* s = "");
+  void println(const String& s);
+  void printf(const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 
-// Read (non-blocking, per-task ring buffer)
-String rtosRead();
-size_t rtosReadBytes(uint8_t* buf, size_t maxlen);
+  // Read (non-blocking, line-based)
+  String read();
+
+private:
+  SemaphoreHandle_t _mtx = nullptr;
+  size_t _ringSize = RTOS_RING_SIZE;
+  bool _readerUp = false;
+  void _lock();
+  void _unlock();
+  void _startReader();
+  friend void _rtosReaderTask(void*);
+};
+
+extern RTOSSerial rtosSerial;
 
 #endif

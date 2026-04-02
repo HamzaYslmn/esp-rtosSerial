@@ -9,14 +9,13 @@
 
 void setup() {
   Serial.begin(115200);
-  rtosSerialInit();
-  rtosPrintln("Type something:");
+  rtosSerial.println("Type something:");
 }
 
 void loop() {
-  String cmd = rtosRead();
+  String cmd = rtosSerial.read();
   if (cmd.length()) {
-    rtosPrintf("Echo: %s\n", cmd.c_str());
+    rtosSerial.printf("Echo: %s\n", cmd.c_str());
   }
   vTaskDelay(pdMS_TO_TICKS(10));
 }

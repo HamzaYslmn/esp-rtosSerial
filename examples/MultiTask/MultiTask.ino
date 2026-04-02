@@ -9,7 +9,7 @@
 
 void sensorTask(void*) {
   for (;;) {
-    rtosPrintf("[sensor] heap=%lu uptime=%lus\n",
+    rtosSerial.printf("[sensor] heap=%lu uptime=%lus\n",
       (unsigned long)ESP.getFreeHeap(), millis() / 1000);
     vTaskDelay(pdMS_TO_TICKS(3000));
   }
@@ -17,20 +17,19 @@ void sensorTask(void*) {
 
 void cmdTask(void*) {
   for (;;) {
-    String cmd = rtosRead();
-    if (cmd == "ping") rtosPrintln("[cmd] pong!");
+    String cmd = rtosSerial.read();
+    if (cmd == "ping") rtosSerial.println("[cmd] pong!");
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
 void setup() {
   Serial.begin(115200);
-  rtosSerialInit();
 
   xTaskCreatePinnedToCore(sensorTask, "sensor", 2048, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(cmdTask,    "cmd",    2048, NULL, 1, NULL, 1);
 
-  rtosPrintln("Ready. Type 'ping' for pong.");
+  rtosSerial.println("Ready. Type 'ping' for pong.");
 }
 
 void loop() {
