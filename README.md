@@ -1,9 +1,9 @@
-# Esp32-RTOS-Serial
+# esp-rtosSerial
 
 [![Arduino Library](https://img.shields.io/badge/Arduino-Library-blue?logo=arduino)](https://github.com/HamzaYslmn/Esp32-RTOS-Serial)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Thread-safe Serial wrapper for ESP32 FreeRTOS. Inherits from `Stream` — full native Arduino API with mutex-protected I/O. **Broadcast reads** — every task sees every byte and every line.
+Thread-safe Serial wrapper for ESP32 and ESP8266. Inherits from `Stream` — full native Arduino API. **ESP32**: mutex-protected I/O, broadcast reads — every task sees every byte. **ESP8266**: thin passthrough wrapper for cross-platform compatibility.
 
 ## Quick Start
 
@@ -41,8 +41,9 @@ Inherits from Arduino's `Print` class — all `print`/`println` overloads work a
 ## How It Works
 
 - **Write**: All output methods share one mutex — output from different tasks never interleaves
-- **Read (broadcast)**: A background reader task (started on first read) reads Serial into two broadcast buffers: a **byte ring** (512B, for `read()`/`readBytes()`) and a **line ring** (8 slots, for `readLine()`). Each task gets its own cursor — **every task sees everything**. Up to 4 subscribers.
-- **Lazy init**: Mutexes created on first use. Reader task created on first `read()` call.
+- **Read (broadcast)**: `Serial.onReceive()` callback reads incoming bytes into a single ring buffer (512B default). Each task gets its own read cursor and line cursor — **every task sees everything**. Up to 4 subscribers (dead-task slots are reclaimed automatically).
+- **Lazy init**: Mutexes created on first use (thread-safe via spinlock). Ring buffer allocated on first `read()` call.
+- **Note**: Don't mix `read()` and `readLine()` in the same task — they use independent cursors.
 
 ## Multi-Task Broadcast Example
 

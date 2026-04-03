@@ -2,11 +2,17 @@
 
 RTOSSerial rtosSerial;
 
+#ifdef ESP32
+
 // ── Mutex ────────────────────────────────────────────────────
 
 void RTOSSerial::_ensureMtx() {
+  if (_wMtx) return;  // fast path: already initialized
+  static portMUX_TYPE initLock = portMUX_INITIALIZER_UNLOCKED;
+  taskENTER_CRITICAL(&initLock);
   if (!_wMtx) _wMtx = xSemaphoreCreateMutex();
   if (!_rMtx) _rMtx = xSemaphoreCreateMutex();
+  taskEXIT_CRITICAL(&initLock);
 }
 
 void RTOSSerial::begin(size_t bufSize) {
@@ -14,12 +20,14 @@ void RTOSSerial::begin(size_t bufSize) {
   if (!_buf) {
     _bufSize = bufSize;
     _buf = (uint8_t*)malloc(bufSize);
+    if (!_buf) _bufSize = 0;
   }
 }
 
 // ── RX callback (event-driven, no task needed) ───────────────
 
 void _rtosOnRx() {
+  if (!rtosSerial._buf) return;
   xSemaphoreTake(rtosSerial._rMtx, portMAX_DELAY);
   while (Serial.available()) {
     uint8_t c = (uint8_t)Serial.read();
@@ -46,6 +54,13 @@ int RTOSSerial::_sub() {
     int i = _subCnt++;
     _subs[i] = { me, _head, _head };
     return i;
+  }
+  // MARK: reclaim slot from deleted task
+  for (int i = 0; i < _subCnt; i++) {
+    if (eTaskGetState(_subs[i].task) == eDeleted) {
+      _subs[i] = { me, _head, _head };
+      return i;
+    }
   }
   return -1;
 }
@@ -75,23 +90,21 @@ int RTOSSerial::available() {
   xSemaphoreTake(_rMtx, portMAX_DELAY);
   int i = _sub();
   if (i < 0) { xSemaphoreGive(_rMtx); return 0; }
-  uint32_t oldest = (_head > _bufSize) ? _head - _bufSize : 0;
-  if (_subs[i].byteCur < oldest) _subs[i].byteCur = oldest;
-  int n = (int)(_head - _subs[i].byteCur);
+  uint32_t behind = _head - _subs[i].byteCur;
+  if (behind > _bufSize) { _subs[i].byteCur = _head - (uint32_t)_bufSize; behind = _bufSize; }
   xSemaphoreGive(_rMtx);
-  return n;
+  return (int)behind;
 }
 
 int RTOSSerial::read() {
   _startRx();
   xSemaphoreTake(_rMtx, portMAX_DELAY);
   int i = _sub();
-  if (i < 0 || _subs[i].byteCur >= _head) {
+  if (i < 0 || _subs[i].byteCur == _head) {
     xSemaphoreGive(_rMtx);
     return -1;
   }
-  uint32_t oldest = (_head > _bufSize) ? _head - _bufSize : 0;
-  if (_subs[i].byteCur < oldest) _subs[i].byteCur = oldest;
+  if (_head - _subs[i].byteCur > _bufSize) _subs[i].byteCur = _head - (uint32_t)_bufSize;
   uint8_t b = _buf[_subs[i].byteCur % _bufSize];
   _subs[i].byteCur++;
   xSemaphoreGive(_rMtx);
@@ -102,12 +115,11 @@ int RTOSSerial::peek() {
   _startRx();
   xSemaphoreTake(_rMtx, portMAX_DELAY);
   int i = _sub();
-  if (i < 0 || _subs[i].byteCur >= _head) {
+  if (i < 0 || _subs[i].byteCur == _head) {
     xSemaphoreGive(_rMtx);
     return -1;
   }
-  uint32_t oldest = (_head > _bufSize) ? _head - _bufSize : 0;
-  if (_subs[i].byteCur < oldest) _subs[i].byteCur = oldest;
+  if (_head - _subs[i].byteCur > _bufSize) _subs[i].byteCur = _head - (uint32_t)_bufSize;
   uint8_t b = _buf[_subs[i].byteCur % _bufSize];
   xSemaphoreGive(_rMtx);
   return b;
@@ -121,6 +133,7 @@ void RTOSSerial::flush() {
 }
 
 // ── Broadcast line read (scans byte buffer for \n) ───────────
+// MARK: readLine — pre-scan under lock, build String outside
 
 String RTOSSerial::readLine() {
   _startRx();
@@ -128,26 +141,37 @@ String RTOSSerial::readLine() {
   int i = _sub();
   if (i < 0) { xSemaphoreGive(_rMtx); return ""; }
 
-  uint32_t oldest = (_head > _bufSize) ? _head - _bufSize : 0;
-  if (_subs[i].lineCur < oldest) _subs[i].lineCur = oldest;
+  if (_head - _subs[i].lineCur > _bufSize) _subs[i].lineCur = _head - (uint32_t)_bufSize;
 
+  // skip leading CR/LF
   uint32_t pos = _subs[i].lineCur;
-  String line;
-  while (pos < _head) {
-    uint8_t c = _buf[pos % _bufSize];
+  while (pos != _head && (_buf[pos % _bufSize] == '\n' || _buf[pos % _bufSize] == '\r'))
     pos++;
-    if (c == '\n' || c == '\r') {
-      if (line.length()) {
-        _subs[i].lineCur = pos;
-        xSemaphoreGive(_rMtx);
-        return line;
-      }
-      _subs[i].lineCur = pos;
-      continue;
-    }
-    line += (char)c;
-  }
+  _subs[i].lineCur = pos;
 
+  // scan for line content ending at next CR/LF
+  uint32_t lineStart = pos;
+  while (pos != _head && _buf[pos % _bufSize] != '\n' && _buf[pos % _bufSize] != '\r')
+    pos++;
+
+  uint32_t len = pos - lineStart;
+  if (!len || pos == _head) { xSemaphoreGive(_rMtx); return ""; }
+
+  // copy bytes to local buffer under mutex, then release
+  uint8_t tmp[257];
+  uint8_t* heap = (len >= 257) ? (uint8_t*)malloc(len + 1) : nullptr;
+  uint8_t* dst = heap ? heap : tmp;
+  if (!dst) { xSemaphoreGive(_rMtx); return ""; }
+  for (uint32_t j = 0; j < len; j++) dst[j] = _buf[(lineStart + j) % _bufSize];
+  dst[len] = '\0';
+
+  _subs[i].lineCur = pos;
   xSemaphoreGive(_rMtx);
-  return "";
+
+  // build String outside mutex — single allocation
+  String line((const char*)dst);
+  if (heap) free(heap);
+  return line;
 }
+
+#endif // ESP32

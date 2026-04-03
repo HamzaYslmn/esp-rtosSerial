@@ -2,6 +2,9 @@
 #define RTOS_SERIAL_H
 
 #include <Arduino.h>
+
+#ifdef ESP32
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -65,6 +68,46 @@ private:
   void _startRx();
   friend void _rtosOnRx();
 };
+
+#else // ESP8266 — thin passthrough (single-threaded, no RTOS needed)
+
+/*
+ * RTOSSerial — ESP8266 passthrough wrapper
+ *
+ * Same API as the ESP32 version so user code compiles on both.
+ * No mutexes (ESP8266 is single-threaded). readLine() is non-blocking.
+ */
+
+class RTOSSerial : public Stream {
+public:
+  void begin(size_t = 512) {}
+
+  size_t write(uint8_t c) override           { return Serial.write(c); }
+  size_t write(const uint8_t* b, size_t s) override { return Serial.write(b, s); }
+  int    available() override                { return Serial.available(); }
+  int    read() override                     { return Serial.read(); }
+  int    peek() override                     { return Serial.peek(); }
+  void   flush() override                    { Serial.flush(); }
+
+  String readLine() {
+    while (Serial.available()) {
+      char c = Serial.read();
+      if (c == '\n' || c == '\r') {
+        if (_lineBuf.length()) { String l = _lineBuf; _lineBuf = ""; return l; }
+        continue;
+      }
+      if (_lineBuf.length() < 256) _lineBuf += c;
+    }
+    return "";
+  }
+
+  using Print::write;
+
+private:
+  String _lineBuf;
+};
+
+#endif
 
 extern RTOSSerial rtosSerial;
 
