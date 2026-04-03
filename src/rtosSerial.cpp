@@ -15,13 +15,23 @@ void RTOSSerial::_ensureMtx() {
   taskEXIT_CRITICAL(&initLock);
 }
 
-void RTOSSerial::begin(size_t bufSize) {
+void RTOSSerial::begin(unsigned long baud, size_t bufSize) {
+  if (baud) Serial.begin(baud);
   _ensureMtx();
   if (!_buf) {
     _bufSize = bufSize;
     _buf = (uint8_t*)malloc(bufSize);
     if (!_buf) _bufSize = 0;
   }
+}
+
+void RTOSSerial::end() {
+  if (_rxUp) { Serial.onReceive(nullptr); _rxUp = false; }
+  if (_buf) { free(_buf); _buf = nullptr; _bufSize = 0; _head = 0; }
+  if (_wMtx) { vSemaphoreDelete(_wMtx); _wMtx = nullptr; }
+  if (_rMtx) { vSemaphoreDelete(_rMtx); _rMtx = nullptr; }
+  for (int i = 0; i < _subCnt; i++) _subs[i].task = nullptr;
+  _subCnt = 0;
 }
 
 // ── RX callback (event-driven, no task needed) ───────────────
@@ -55,9 +65,9 @@ int RTOSSerial::_sub() {
     _subs[i] = { me, _head, _head };
     return i;
   }
-  // MARK: reclaim slot from deleted task
+  // MARK: reclaim slot from deleted/invalid task
   for (int i = 0; i < _subCnt; i++) {
-    if (eTaskGetState(_subs[i].task) == eDeleted) {
+    if (!_subs[i].task || eTaskGetState(_subs[i].task) == eDeleted) {
       _subs[i] = { me, _head, _head };
       return i;
     }
@@ -132,6 +142,23 @@ void RTOSSerial::flush() {
   xSemaphoreGive(_wMtx);
 }
 
+// ── Bulk read (single mutex hold) ────────────────────────────
+
+size_t RTOSSerial::readBytes(char* buffer, size_t length) {
+  _startRx();
+  xSemaphoreTake(_rMtx, portMAX_DELAY);
+  int i = _sub();
+  if (i < 0) { xSemaphoreGive(_rMtx); return 0; }
+  uint32_t behind = _head - _subs[i].byteCur;
+  if (behind > _bufSize) { _subs[i].byteCur = _head - (uint32_t)_bufSize; behind = _bufSize; }
+  size_t n = (length < behind) ? length : behind;
+  for (size_t j = 0; j < n; j++)
+    buffer[j] = (char)_buf[(_subs[i].byteCur + j) % _bufSize];
+  _subs[i].byteCur += n;
+  xSemaphoreGive(_rMtx);
+  return n;
+}
+
 // ── Broadcast line read (scans byte buffer for \n) ───────────
 // MARK: readLine — pre-scan under lock, build String outside
 
@@ -159,9 +186,15 @@ String RTOSSerial::readLine() {
 
   // copy bytes to local buffer under mutex, then release
   uint8_t tmp[257];
-  uint8_t* heap = (len >= 257) ? (uint8_t*)malloc(len + 1) : nullptr;
-  uint8_t* dst = heap ? heap : tmp;
-  if (!dst) { xSemaphoreGive(_rMtx); return ""; }
+  uint8_t* heap = nullptr;
+  uint8_t* dst;
+  if (len < sizeof(tmp)) {
+    dst = tmp;
+  } else {
+    heap = (uint8_t*)malloc(len + 1);
+    if (!heap) { xSemaphoreGive(_rMtx); return ""; }
+    dst = heap;
+  }
   for (uint32_t j = 0; j < len; j++) dst[j] = _buf[(lineStart + j) % _bufSize];
   dst[len] = '\0';
 

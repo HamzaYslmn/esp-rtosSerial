@@ -11,7 +11,7 @@ Thread-safe Serial wrapper for ESP32 and ESP8266. Inherits from `Stream` — ful
 #include <rtosSerial.h>
 
 void setup() {
-  Serial.begin(115200);
+  rtosSerial.begin(115200);
   rtosSerial.println("Ready");
 }
 
@@ -23,7 +23,7 @@ void loop() {
 }
 ```
 
-No `begin()` needed — auto-initializes on first use.
+`rtosSerial.begin(baud)` calls `Serial.begin()` internally. Omit baud to auto-initialize on first use (requires `Serial.begin()` separately).
 
 ## API
 
@@ -31,7 +31,8 @@ Inherits from Arduino's `Print` class — all `print`/`println` overloads work a
 
 | Method | Description |
 |--------|-------------|
-| `rtosSerial.begin()` | Optional init (auto-inits on first use) |
+| `rtosSerial.begin(baud)` | Init Serial + ring buffer (or omit baud for lazy init) |
+| `rtosSerial.end()` | Cleanup — frees buffer, detaches ISR, deletes mutexes |
 | `rtosSerial.print(x)` | All `Print` overloads — int, float, String, char, etc. |
 | `rtosSerial.println(x)` | All `Print` overloads + newline |
 | `rtosSerial.printf(fmt, ...)` | Formatted output |
@@ -61,7 +62,7 @@ void sensorTask(void*) {
 }
 
 void setup() {
-  Serial.begin(115200);
+  rtosSerial.begin(115200);
   xTaskCreatePinnedToCore(sensorTask, "sensor", 2048, NULL, 1, NULL, 0);
   rtosSerial.println("Type /start — both tasks will see it.");
 }

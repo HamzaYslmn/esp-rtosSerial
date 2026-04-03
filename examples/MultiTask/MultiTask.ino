@@ -1,5 +1,5 @@
 /*
- * MultiTask.ino — Esp32-RTOS-Serial broadcast demo
+ * MultiTask.ino — esp-rtosSerial broadcast demo
  *
  * Three tasks all calling read() — each sees every command.
  * Type /ping, /status, or /help to see broadcast in action.
@@ -47,7 +47,7 @@ void statusTask(void*) {
 // ── Setup ────────────────────────────────────────────────────
 
 void setup() {
-  Serial.begin(115200);
+  rtosSerial.begin(115200);
 
   xTaskCreatePinnedToCore(pingTask,   "ping",   2048, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(statusTask, "status", 2048, NULL, 1, NULL, 1);

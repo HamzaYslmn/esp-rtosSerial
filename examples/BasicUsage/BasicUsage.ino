@@ -1,5 +1,5 @@
 /*
- * BasicUsage.ino — Esp32-RTOS-Serial
+ * BasicUsage.ino — esp-rtosSerial
  *
  * Thread-safe Serial from any task.
  * Type something and press Enter to echo back.
@@ -8,7 +8,7 @@
 #include <rtosSerial.h>
 
 void setup() {
-  Serial.begin(115200);
+  rtosSerial.begin(115200);
   rtosSerial.println("Type something:");
 }
 

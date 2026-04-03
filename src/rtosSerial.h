@@ -20,7 +20,7 @@
  * No polling, no background task. Uses Serial.onReceive() for
  * zero-latency, event-driven byte capture.
  *
- *   Serial.begin(115200);
+ *   rtosSerial.begin(115200);
  *   rtosSerial.println(3.14);              // thread-safe, any task
  *   String cmd = rtosSerial.readLine();    // broadcast, non-blocking
  *   int b = rtosSerial.read();             // broadcast, byte-level
@@ -28,7 +28,8 @@
 
 class RTOSSerial : public Stream {
 public:
-  void begin(size_t bufSize = 512);
+  void begin(unsigned long baud = 0, size_t bufSize = 512);
+  void end();
 
   // Stream interface (broadcast reads, mutex-protected writes)
   size_t write(uint8_t c) override;
@@ -37,6 +38,9 @@ public:
   int    read() override;
   int    peek() override;
   void   flush() override;
+
+  // Bulk read — single mutex hold (overrides Stream default)
+  size_t readBytes(char* buffer, size_t length) override;
 
   // Non-blocking broadcast line read (returns "" if no complete line)
   String readLine();
@@ -80,7 +84,8 @@ private:
 
 class RTOSSerial : public Stream {
 public:
-  void begin(size_t = 512) {}
+  void begin(unsigned long baud = 0, size_t = 512) { if (baud) Serial.begin(baud); }
+  void end() { _linePos = 0; }
 
   size_t write(uint8_t c) override           { return Serial.write(c); }
   size_t write(const uint8_t* b, size_t s) override { return Serial.write(b, s); }
@@ -93,10 +98,14 @@ public:
     while (Serial.available()) {
       char c = Serial.read();
       if (c == '\n' || c == '\r') {
-        if (_lineBuf.length()) { String l = _lineBuf; _lineBuf = ""; return l; }
+        if (_linePos) {
+          String l(_lineBuf, _linePos);
+          _linePos = 0;
+          return l;
+        }
         continue;
       }
-      if (_lineBuf.length() < 256) _lineBuf += c;
+      if (_linePos < sizeof(_lineBuf) - 1) _lineBuf[_linePos++] = c;
     }
     return "";
   }
@@ -104,7 +113,8 @@ public:
   using Print::write;
 
 private:
-  String _lineBuf;
+  char   _lineBuf[256];
+  size_t _linePos = 0;
 };
 
 #endif

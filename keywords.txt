@@ -23,6 +23,7 @@ available	KEYWORD2
 peek	KEYWORD2
 readBytes	KEYWORD2
 flush	KEYWORD2
+end	KEYWORD2
 
 #######################################
 # Instances (KEYWORD2)
